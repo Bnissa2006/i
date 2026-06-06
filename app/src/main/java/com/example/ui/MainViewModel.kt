@@ -1,265 +1,155 @@
 package com.example.ui
 
 import android.app.Application
-import android.os.Environment
-import android.os.StatFs
+import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.download.DownloadManager
 import com.example.data.local.AppDatabase
-import com.example.data.model.Bookmark
 import com.example.data.model.DownloadItem
 import com.example.data.model.DownloadStatus
-import com.example.data.model.History
+import com.example.data.model.ExtractedStream
+import com.example.data.download.DownloadManager
+import com.example.data.download.MediaExtractor
 import com.example.data.repository.AppRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-data class WebTab(
-    val id: String = UUID.randomUUID().toString(),
-    val title: String = "Google",
-    val url: String = "https://www.google.com",
-    val progress: Int = 0
-)
-
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val database = AppDatabase.getDatabase(application)
-    private val repository = AppRepository(
-        database.bookmarkDao(),
-        database.historyDao(),
-        database.downloadDao(),
-        application
-    )
+    private val TAG = "MainViewModel"
 
-    val downloadManager = DownloadManager(application, repository)
+    private val db = AppDatabase.getDatabase(application)
+    val appRepository = AppRepository(db.downloadDao())
+    val downloadManager = DownloadManager(application, appRepository)
 
-    // Dynamic UI states powered by Room Flows
-    val bookmarks: StateFlow<List<Bookmark>> = repository.allBookmarks
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Language locale state (Arabic "ar" / English "en")
+    var language by mutableStateOf("en")
+        private set
 
-    val history: StateFlow<List<History>> = repository.allHistory
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Dark mode state
+    var isDarkMode by mutableStateOf(true)
+        private set
 
-    val allDownloads: StateFlow<List<DownloadItem>> = repository.allDownloads
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Simple Browser Navigation History
+    val browserHistory = mutableStateListOf<String>()
 
-    // Settings States
-    val themeMode: StateFlow<String> = repository.themeMode
-    val language: StateFlow<String> = repository.language
-    val downloadLocation: StateFlow<String> = repository.downloadLocation
+    // Extraction State
+    var isExtracting by mutableStateOf(false)
+        private set
+    var searchUrlInput by mutableStateOf("https://youtu.be/4mT1rpl4w6A?si=XzKBrMA38DdwCGT-")
+    var extractedStreams = mutableStateListOf<ExtractedStream>()
+        private set
+    var extractionErrorMsg by mutableStateOf<String?>(null)
+        private set
 
-    // Browser Multi-Tabs Configuration
-    private val _webTabs = MutableStateFlow(listOf(WebTab()))
-    val webTabs = _webTabs.asStateFlow()
-
-    private val _activeTabId = MutableStateFlow(_webTabs.value.first().id)
-    val activeTabId = _activeTabId.asStateFlow()
-
-    // File Manager Search and filter
-    private val _fileSearchQuery = MutableStateFlow("")
-    val fileSearchQuery = _fileSearchQuery.asStateFlow()
-
-    // Current player properties
-    private val _playingVideo = MutableStateFlow<DownloadItem?>(null)
-    val playingVideo = _playingVideo.asStateFlow()
-
-    private val _playingAudio = MutableStateFlow<DownloadItem?>(null)
-    val playingAudio = _playingAudio.asStateFlow()
-
-    // Autodetected downloadable media on active web page
-    private val _detectedMediaTitle = MutableStateFlow("")
-    val detectedMediaTitle = _detectedMediaTitle.asStateFlow()
-
-    private val _detectedMediaUrl = MutableStateFlow("")
-    val detectedMediaUrl = _detectedMediaUrl.asStateFlow()
-
-    private val _detectedMediaThumbnail = MutableStateFlow("")
-    val detectedMediaThumbnail = _detectedMediaThumbnail.asStateFlow()
-
-    private val _hasDetectedMedia = MutableStateFlow(false)
-    val hasDetectedMedia = _hasDetectedMedia.asStateFlow()
-
-    // Tab Operations
-    fun addNewTab(url: String = "https://www.google.com") {
-        val newTab = WebTab(url = url, title = getDomainOfUrl(url))
-        _webTabs.value = _webTabs.value + newTab
-        _activeTabId.value = newTab.id
-    }
-
-    fun removeTab(tabId: String) {
-        if (_webTabs.value.size <= 1) return // Keep at least one tab
-        val tabs = _webTabs.value.filter { it.id != tabId }
-        _webTabs.value = tabs
-        if (_activeTabId.value == tabId) {
-            _activeTabId.value = tabs.first().id
-        }
-    }
-
-    fun selectTab(tabId: String) {
-        _activeTabId.value = tabId
-    }
-
-    fun updateCurrentTabUrl(url: String, title: String) {
-        val updatedTabs = _webTabs.value.map {
-            if (it.id == _activeTabId.value) {
-                it.copy(url = url, title = title)
-            } else {
-                it
-            }
-        }
-        _webTabs.value = updatedTabs
-
-        // Auto add to web browsing history
-        viewModelScope.launch {
-            repository.addHistory(title, url)
-        }
-
-        // Trigger realistic media detection dynamically when moving to popular web URLs
-        detectMediaOnUrl(url, title)
-    }
-
-    fun updateTabProgress(progress: Int) {
-        val updatedTabs = _webTabs.value.map {
-            if (it.id == _activeTabId.value) {
-                it.copy(progress = progress)
-            } else {
-                it
-            }
-        }
-        _webTabs.value = updatedTabs
-    }
-
-    // Media Detection Engine
-    private fun detectMediaOnUrl(url: String, title: String) {
-        val lowerUrl = url.lowercase()
-        val extensionMatches = lowerUrl.endsWith(".mp4") || lowerUrl.endsWith(".mp3") || lowerUrl.endsWith(".mkv")
-        val socialMatches = lowerUrl.contains("youtube.com") || lowerUrl.contains("youtu.be") ||
-                lowerUrl.contains("vimeo.com") || lowerUrl.contains("soundcloud.com") ||
-                lowerUrl.contains("facebook.com") || lowerUrl.contains("dailymotion.com") ||
-                lowerUrl.contains("tiktok.com") || lowerUrl.contains("twitch.tv")
-
-        if (extensionMatches || socialMatches) {
-            _detectedMediaTitle.value = title.ifBlank { "Media content from " + getDomainOfUrl(url) }
-            _detectedMediaUrl.value = url
-            _detectedMediaThumbnail.value = if (lowerUrl.contains("soundcloud")) "music" else "video"
-            _hasDetectedMedia.value = true
-        } else {
-            _hasDetectedMedia.value = false
-        }
-    }
-
-    fun clearDetectedMedia() {
-        _hasDetectedMedia.value = false
-    }
-
-    // Bookmarks Toggle
-    fun toggleBookmark(title: String, url: String) {
-        viewModelScope.launch {
-            if (repository.isBookmarked(url)) {
-                repository.removeBookmark(url)
-            } else {
-                repository.addBookmark(title, url)
-            }
-        }
-    }
-
-    // History cleaning
-    fun deleteHistoryItem(id: Int) {
-        viewModelScope.launch {
-            repository.removeHistory(id)
-        }
-    }
-
-    fun clearAllHistory() {
-        viewModelScope.launch {
-            repository.clearHistory()
-        }
-    }
-
-    // Preferences Settings
-    fun changeThemeMode(theme: String) {
-        repository.setThemeMode(theme)
-    }
+    // Live observed streams from DB
+    val allDownloadsState: StateFlow<List<DownloadItem>> = appRepository.allDownloadsFlow
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
     fun changeLanguage(lang: String) {
-        repository.setLanguage(lang)
+        language = lang
     }
 
-    fun changeDownloadLocation(loc: String) {
-        repository.setDownloadLocation(loc)
+    fun toggleTheme() {
+        isDarkMode = !isDarkMode
     }
 
-    // Playback state managers
-    fun setPlayingVideo(item: DownloadItem?) {
-        _playingVideo.value = item
+    fun clearHistory() {
+        browserHistory.clear()
     }
 
-    fun setPlayingAudio(item: DownloadItem?) {
-        _playingAudio.value = item
-    }
-
-    fun updateDownload(item: DownloadItem) {
-        viewModelScope.launch {
-            repository.updateDownload(item)
+    fun addToHistory(url: String) {
+        if (browserHistory.isEmpty() || browserHistory.last() != url) {
+            browserHistory.add(url)
         }
     }
 
-    fun updateFileSearchQuery(query: String) {
-        _fileSearchQuery.value = query
+    // High fidelity real extraction task triggered when user attempts to grab stream qualities
+    fun triggerWebpageStreamExtraction(url: String, onFinished: (Boolean) -> Unit = {}) {
+        isExtracting = true
+        extractionErrorMsg = null
+        extractedStreams.clear()
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val streams = MediaExtractor.extractMedia(url)
+                withContext(Dispatchers.Main) {
+                    isExtracting = false
+                    if (streams.isNotEmpty()) {
+                        extractedStreams.addAll(streams)
+                        onFinished(true)
+                    } else {
+                        extractionErrorMsg = "No stream found"
+                        onFinished(false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed stream extraction: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    isExtracting = false
+                    extractionErrorMsg = e.localizedMessage ?: "Unknown compilation error"
+                    onFinished(false)
+                }
+            }
+        }
     }
 
-    // Get storage details card data
-    fun getStorageMetrics(): StorageInfo {
-        return try {
-            val path = Environment.getDataDirectory()
-            val stat = StatFs(path.path)
-            val blockSize = stat.blockSizeLong
-            val availableBlocks = stat.availableBlocksLong
-            val totalBlocks = stat.blockCountLong
-
-            val freeBytes = availableBlocks * blockSize
-            val totalBytes = totalBlocks * blockSize
-
-            val downloadsSize = _webTabs.value.run {
-                allDownloads.value
-                    .filter { it.status == DownloadStatus.COMPLETED }
-                    .sumOf { it.sizeBytes }
+    // Queues download on the background pipeline
+    fun queueStreamForDownload(stream: ExtractedStream) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val extension = stream.container
+            val uniqueId = UUID.randomUUID().toString()
+            val fileName = "${stream.title.filter { it.isLetterOrDigit() || it.isWhitespace() }.take(50)}.$extension"
+            
+            val storageDir = File(getApplication<Application>().filesDir, "downloads")
+            if (!storageDir.exists()) {
+                storageDir.mkdirs()
             }
+            val destinationFile = File(storageDir, fileName)
 
-            StorageInfo(
-                usedByAppBytes = downloadsSize,
-                systemFreeBytes = freeBytes,
-                systemTotalBytes = totalBytes
+            val downloadItem = DownloadItem(
+                id = uniqueId,
+                url = stream.url,
+                title = stream.title,
+                thumbnail = stream.thumbnail,
+                isAudioOnly = stream.isAudioOnly,
+                status = DownloadStatus.PENDING,
+                downloadedBytes = 0L,
+                sizeBytes = stream.sizeBytes,
+                progress = 0f,
+                downloadSpeed = "Reconnecting...",
+                localPath = destinationFile.absolutePath,
+                mimeType = if (stream.isAudioOnly) "audio/$extension" else "video/$extension",
+                durationSeconds = stream.durationSeconds
             )
-        } catch (e: Exception) {
-            StorageInfo(0, 50 * 1024L * 1024L * 1024L, 128 * 1024L * 1024L * 1024L)
+
+            // Save to DB and kickstart real thread downloader
+            appRepository.insertOrUpdate(downloadItem)
+            withContext(Dispatchers.Main) {
+                downloadManager.startDownload(downloadItem)
+            }
         }
     }
 
-    // Small helpers
-    private fun getDomainOfUrl(url: String): String {
-        return try {
-            val uri = java.net.URI(url)
-            var domain = uri.host ?: ""
-            if (domain.startsWith("www.")) {
-                domain = domain.substring(4)
-            }
-            domain.ifBlank { "Google" }
-        } catch (e: Exception) {
-            "Google"
+    fun removeDownload(item: DownloadItem) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Cancel downloading
+            downloadManager.cancelDownload(item.id)
+            appRepository.deleteById(item.id)
         }
     }
 }
-
-data class StorageInfo(
-    val usedByAppBytes: Long,
-    val systemFreeBytes: Long,
-    val systemTotalBytes: Long
-)

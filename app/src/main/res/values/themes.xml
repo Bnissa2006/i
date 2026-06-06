@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <!-- Base application theme. -->
+    <style name="Theme.SnapTube" parent="android:Theme.DeviceDefault.NoActionBar">
+        <!-- Customize your theme here. -->
+        <item name="android:statusBarColor" tools:targetApi="l" xmlns:tools="http://schemas.android.com/tools">?android:attr/colorBackground</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>
