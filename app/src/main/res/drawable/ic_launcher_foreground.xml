@@ -1,0 +1,24 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Play Triangle/Disc Graphic -->
+    <path
+        android:fillColor="#FFD0BCFF"
+        android:pathData="M54,20A34,34 0,1 0,88,54A34,34 0,0 0,54,20zM54,80c-14.3,0 -26,-11.7 -26,-26s11.7,-26 26,-26s26,11.7 26,26s-11.7,26 -26,26z" />
+    <!-- Down Arrow Icon -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,34L54,62 M42,50L54,62L66,50"
+        android:strokeWidth="5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:fillColor="#FFEFB8C8"
+        android:pathData="M40,68h28"
+        android:strokeWidth="5"
+        android:strokeColor="#FFEFB8C8"
+        android:strokeLineCap="round" />
+</vector>

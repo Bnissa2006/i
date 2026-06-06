@@ -1,0 +1,6 @@
+{
+  "name": "SnapTube Video Downloader",
+  "description": "A professional video and audio downloader with an integrated fully-featured web browser, media extraction, and responsive file manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
